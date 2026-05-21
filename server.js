@@ -25,12 +25,18 @@ const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwarg
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-  'gpt-4': 'deepseek-ai/deepseek-v4-pro',                    // ← Replaced with DeepSeek V4 Pro
-  'gpt-4-turbo': 'moonshotai/kimi-k2-instruct-0905',
-  'gpt-4o': 'deepseek-ai/deepseek-v3.1',
+  'gpt-4': 'deepseek-ai/deepseek-v4-pro',
+  'gpt-4-turbo': 'deepseek-ai/deepseek-v4-pro',     // or keep your previous one
+  'gpt-4o': 'deepseek-ai/deepseek-v4-pro',
   'claude-3-opus': 'openai/gpt-oss-120b',
   'claude-3-sonnet': 'openai/gpt-oss-20b',
-  'gemini-pro': 'z-ai/glm-5.1'                               // ← Replaced with GLM-5.1
+  'gemini-pro': 'z-ai/glm-5.1',
+  
+  // Direct aliases (recommended)
+  'deepseek-v4-pro': 'deepseek-ai/deepseek-v4-pro',
+  'deepseek': 'deepseek-ai/deepseek-v4-pro',
+  'glm-5.1': 'z-ai/glm-5.1',
+  'glm': 'z-ai/glm-5.1'
 };
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -62,35 +68,47 @@ app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
     
-    // Smart model selection with fallback
-    let nimModel = MODEL_MAPPING[model];
-    if (!nimModel) {
-      try {
-        await axios.post(`${NIM_API_BASE}/chat/completions`, {
-          model: model,
-          messages: [{ role: 'user', content: 'test' }],
-          max_tokens: 1
-        }, {
-          headers: { 'Authorization': `Bearer ${NIM_API_KEY}`, 'Content-Type': 'application/json' },
-          validateStatus: (status) => status < 500
-        }).then(res => {
-          if (res.status >= 200 && res.status < 300) {
-            nimModel = model;
-          }
-        });
-      } catch (e) {}
-      
-      if (!nimModel) {
-        const modelLower = model.toLowerCase();
-        if (modelLower.includes('gpt-4') || modelLower.includes('claude-opus') || modelLower.includes('405b')) {
-          nimModel = 'meta/llama-3.1-405b-instruct';
-        } else if (modelLower.includes('claude') || modelLower.includes('gemini') || modelLower.includes('70b')) {
-          nimModel = 'meta/llama-3.1-70b-instruct';
-        } else {
-          nimModel = 'meta/llama-3.1-8b-instruct';
-        }
-      }
+    // Smart model selection with fallback + logging
+let nimModel = MODEL_MAPPING[model];
+console.log(`[Proxy] Requested model: "\( {model}" → Mapped to: " \){nimModel || 'NONE'}"`);
+
+if (!nimModel) {
+  console.log(`[Proxy] No mapping found for "${model}", trying direct NIM call...`);
+  
+  try {
+    const testRes = await axios.post(`${NIM_API_BASE}/chat/completions`, {
+      model: model,
+      messages: [{ role: 'user', content: 'test' }],
+      max_tokens: 1
+    }, {
+      headers: { 'Authorization': `Bearer ${NIM_API_KEY}`, 'Content-Type': 'application/json' },
+      validateStatus: (status) => true
+    });
+
+    console.log(`[Proxy] Direct test status for "${model}": ${testRes.status}`);
+
+    if (testRes.status >= 200 && testRes.status < 300) {
+      nimModel = model;
+      console.log(`[Proxy] Using original model name directly`);
     }
+  } catch (e) {
+    console.log(`[Proxy] Direct test failed: ${e.message}`);
+  }
+  
+  if (!nimModel) {
+    console.log(`[Proxy] Using smart fallback`);
+    const modelLower = model.toLowerCase();
+    if (modelLower.includes('gpt-4') || modelLower.includes('405b')) {
+      nimModel = 'meta/llama-3.1-405b-instruct';
+    } else if (modelLower.includes('claude') || modelLower.includes('gemini') || modelLower.includes('70b')) {
+      nimModel = 'meta/llama-3.1-70b-instruct';
+    } else {
+      nimModel = 'meta/llama-3.1-8b-instruct';
+    }
+  }
+}
+
+console.log(`[Proxy] FINAL NIM model used: ${nimModel}`);
     
     // Transform OpenAI request to NIM format
     const nimRequest = {
